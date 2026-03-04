@@ -638,6 +638,15 @@ import { CreateMpSelection } from '@/components/create-mp-selection';
 
 This feature requires two custom stored procedures installed on your Ministry Platform database. These are needed because `dp_Selections`, `dp_Selected_Records`, and `dp_Pages` are not accessible via the REST API.
 
+**Install scripts** are provided in the `scripts/` directory and must be run against your Ministry Platform SQL Server database by a database administrator:
+
+| Script | Purpose |
+|--------|---------|
+| [`scripts/api_Custom_CreateSelection.sql`](scripts/api_Custom_CreateSelection.sql) | Creates selections with record IDs |
+| [`scripts/api_custom_GetPages.sql`](scripts/api_custom_GetPages.sql) | Returns pages with optional name search |
+
+Each script is self-contained — it creates the stored procedure, registers it in `dp_API_Procedures`, and grants execute permission to the Administrators role.
+
 #### `api_custom_CreateSelection`
 
 Creates a selection header and inserts selected records in a single transaction.
