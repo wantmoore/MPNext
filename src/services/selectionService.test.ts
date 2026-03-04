@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SelectionService } from '@/services/selectionService';
 
-const mockCreateTableRecords = vi.fn();
+const mockExecuteProcedureWithBody = vi.fn();
 
 vi.mock('@/lib/providers/ministry-platform', () => {
   return {
     MPHelper: class {
-      createTableRecords = mockCreateTableRecords;
+      executeProcedureWithBody = mockExecuteProcedureWithBody;
     },
   };
 });
@@ -17,6 +17,7 @@ describe('SelectionService', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (SelectionService as any).instance = undefined;
     process.env.NEXT_PUBLIC_MINISTRY_PLATFORM_URL = 'https://my.grangerchurch.com';
+    process.env.MINISTRY_PLATFORM_DOMAIN_ID = '1';
   });
 
   describe('getInstance', () => {
@@ -40,10 +41,10 @@ describe('SelectionService', () => {
       ).rejects.toThrow('recordIds must not be empty');
     });
 
-    it('should call dp_Selections first then dp_Selected_Records', async () => {
-      mockCreateTableRecords
-        .mockResolvedValueOnce([{ Selection_ID: 138291, Selection_Name: 'Test', Record_Count: 2, Is_Temporary: false, User_ID_Owner: 42 }])
-        .mockResolvedValueOnce([{}, {}]);
+    it('should call executeProcedureWithBody with correct params', async () => {
+      mockExecuteProcedureWithBody.mockResolvedValueOnce([
+        [{ Selection_ID: 138291, Selection_Name: 'Test Selection', Record_Count: 2 }],
+      ]);
 
       const service = await SelectionService.getInstance();
       await service.createSelection({
@@ -53,25 +54,20 @@ describe('SelectionService', () => {
         userId: 42,
       });
 
-      expect(mockCreateTableRecords).toHaveBeenCalledTimes(2);
-      expect(mockCreateTableRecords).toHaveBeenNthCalledWith(1, 'dp_Selections', [
-        {
-          Selection_Name: 'Test Selection',
-          Record_Count: 2,
-          Is_Temporary: false,
-          User_ID_Owner: 42,
-        },
-      ]);
-      expect(mockCreateTableRecords).toHaveBeenNthCalledWith(2, 'dp_Selected_Records', [
-        { Selection_ID: 138291, Record_ID: 10 },
-        { Selection_ID: 138291, Record_ID: 20 },
-      ]);
+      expect(mockExecuteProcedureWithBody).toHaveBeenCalledTimes(1);
+      expect(mockExecuteProcedureWithBody).toHaveBeenCalledWith('api_custom_CreateSelection', {
+        '@DomainID': 1,
+        '@PageID': 292,
+        '@UserID': 42,
+        '@SelectionName': 'Test Selection',
+        '@RecordIDs': '10,20',
+      });
     });
 
     it('should build the correct selectionUrl from NEXT_PUBLIC_MINISTRY_PLATFORM_URL', async () => {
-      mockCreateTableRecords
-        .mockResolvedValueOnce([{ Selection_ID: 138291 }])
-        .mockResolvedValueOnce([{}]);
+      mockExecuteProcedureWithBody.mockResolvedValueOnce([
+        [{ Selection_ID: 138291, Selection_Name: 'Test', Record_Count: 1 }],
+      ]);
 
       const service = await SelectionService.getInstance();
       const result = await service.createSelection({
@@ -81,13 +77,13 @@ describe('SelectionService', () => {
         userId: 1,
       });
 
-      expect(result.selectionUrl).toBe('https://my.grangerchurch.com/mp/292.138291');
+      expect(result.selectionUrl).toBe('https://my.grangerchurch.com/292.138291');
       expect(result.pageId).toBe(292);
       expect(result.selectionId).toBe(138291);
     });
 
-    it('should throw when MP returns no Selection_ID', async () => {
-      mockCreateTableRecords.mockResolvedValueOnce([{}]);
+    it('should throw when stored procedure returns no Selection_ID', async () => {
+      mockExecuteProcedureWithBody.mockResolvedValueOnce([[{}]]);
 
       const service = await SelectionService.getInstance();
       await expect(
@@ -97,11 +93,11 @@ describe('SelectionService', () => {
           recordIds: [1],
           userId: 1,
         })
-      ).rejects.toThrow('Failed to create selection: no Selection_ID returned');
+      ).rejects.toThrow('Failed to create selection: stored procedure returned no Selection_ID');
     });
 
-    it('should throw when MP returns empty array for dp_Selections', async () => {
-      mockCreateTableRecords.mockResolvedValueOnce([]);
+    it('should throw when stored procedure returns empty result set', async () => {
+      mockExecuteProcedureWithBody.mockResolvedValueOnce([[]]);
 
       const service = await SelectionService.getInstance();
       await expect(
@@ -111,13 +107,11 @@ describe('SelectionService', () => {
           recordIds: [1],
           userId: 1,
         })
-      ).rejects.toThrow('Failed to create selection: no Selection_ID returned');
+      ).rejects.toThrow('Failed to create selection: stored procedure returned no Selection_ID');
     });
 
-    it('should propagate errors from the bulk insert call', async () => {
-      mockCreateTableRecords
-        .mockResolvedValueOnce([{ Selection_ID: 999 }])
-        .mockRejectedValueOnce(new Error('Bulk insert failed'));
+    it('should propagate errors from executeProcedureWithBody', async () => {
+      mockExecuteProcedureWithBody.mockRejectedValueOnce(new Error('Procedure execution failed'));
 
       const service = await SelectionService.getInstance();
       await expect(
@@ -127,14 +121,13 @@ describe('SelectionService', () => {
           recordIds: [1, 2, 3],
           userId: 1,
         })
-      ).rejects.toThrow('Bulk insert failed');
+      ).rejects.toThrow('Procedure execution failed');
     });
 
-    it('should use the Selection_ID from dp_Selections for all dp_Selected_Records rows', async () => {
-      const selectionId = 55555;
-      mockCreateTableRecords
-        .mockResolvedValueOnce([{ Selection_ID: selectionId }])
-        .mockResolvedValueOnce([{}, {}, {}]);
+    it('should join recordIds as comma-separated string', async () => {
+      mockExecuteProcedureWithBody.mockResolvedValueOnce([
+        [{ Selection_ID: 55555, Selection_Name: 'Test', Record_Count: 3 }],
+      ]);
 
       const service = await SelectionService.getInstance();
       await service.createSelection({
@@ -144,13 +137,8 @@ describe('SelectionService', () => {
         userId: 5,
       });
 
-      const secondCall = mockCreateTableRecords.mock.calls[1];
-      const selectedRecords = secondCall[1] as Array<{ Selection_ID: number; Record_ID: number }>;
-      expect(selectedRecords).toHaveLength(3);
-      selectedRecords.forEach((row) => {
-        expect(row.Selection_ID).toBe(selectionId);
-      });
-      expect(selectedRecords.map((r) => r.Record_ID)).toEqual([100, 200, 300]);
+      const callArgs = mockExecuteProcedureWithBody.mock.calls[0];
+      expect(callArgs[1]['@RecordIDs']).toBe('100,200,300');
     });
   });
 });
